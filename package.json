@@ -1,0 +1,12 @@
+{
+  "name": "stability-bot",
+  "version": "1.0.0",
+  "main": "index.js",
+  "repository": "git@github.com:unbound-finance/stability-bot.git",
+  "author": "unbound-finance",
+  "license": "MIT",
+  "dependencies": {
+    "ethers": "^5.0.21",
+    "web3": "^1.3.0"
+  }
+}
