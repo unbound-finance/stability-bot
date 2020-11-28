@@ -6,6 +6,7 @@ const UnboundValuatorABI = require('./abi/Valuator');
 const UnboundLLCABI = require('./abi/UnboundLLCABI');
 const UniswapRouterABI = require('./abi/UniswapRouter');
 const UniswapPairABI = require('./abi/UniswapPair');
+const ERC20ABI = require('./abi/ERC20');
 
 const mnemonic = 'gallery cinnamon equal inform lend perfect kitchen grab today width eager thank';
 const infuraKey = 'a4dcdfe968254cd4a2a30381e3558541';
@@ -14,15 +15,19 @@ const provider = new ethers.providers.JsonRpcProvider(`https://kovan.infura.io/v
 const wallet = new ethers.Wallet.fromMnemonic(mnemonic);
 const signer = new ethers.Wallet(wallet.privateKey, provider);
 
+const gasLimit = 500000;
+const gasPrice = ethers.utils.parseUnits('30', 'gwei');
+
 // change all the addresses
-config = {
-  UND: '0xc266314a87744E94E6F2FC1130d6C5E43FaB0E75',
-  Valuator: '0x9fC541FCC54Ded46CD69a112d0f27584fb081e45',
-  LLC_Dai: '0xBCad91504416c968fD1b0ed2E10e3bC91E65af8c',
-  DAI: '0xc30d0164Fb4c013dB62E32d48f81BeD92735d97a',
-  unisPair_UndDai: '0x0ab8f8efa4aa3f60a7e20fb6142a3d144008a469',
-  unisPair_EthDai: '0x266480906fd0aa3edd7ff64f466ea9684b792179',
+const config = {
+  UND: '0xa729D5cA5BcE0d275B69728881f5bB86511EA70B',
+  Valuator: '0xe8E0458bc6661848160a1b41b27c45A865e0E3B1',
+  LLC_EthDai: '0x7A95c0193f2D77A2DD5b01A1069CE3Eb59E77017',
+  DAI: '0x9CD539Ac8Dca5757efAc30Cd32da20CD955e0f8B',
+  unisPair_UndDai: '0xa5c638db7a286b722406f03eaf5c8a8178927a19',
+  unisPair_EthDai: '0x54870f44414e69af7eb2f3e1e144ebb7c79325b7',
   uniswapRouter: '0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D',
+  UNDAdmin: '0x2aD458F069A6D456690de46Acfa27EFA26748dA8',
 };
 
 // Unbound Dollars
@@ -32,7 +37,7 @@ const UnboundDollars = new ethers.Contract(config.UND, UnboundDollarsABI, signer
 const Valuator = new ethers.Contract(config.Valuator, UnboundValuatorABI, signer);
 
 // UND-DAI LLC
-const LLCContract = new ethers.Contract(config.LLC_Dai, UnboundLLCABI, signer);
+const LLCContract = new ethers.Contract(config.LLC_EthDai, UnboundLLCABI, signer);
 
 // UND-DAI Uniswap Pair
 const UniswapPairUndDai = new ethers.Contract(config.unisPair_UndDai, UniswapPairABI, signer);
@@ -43,14 +48,21 @@ const UniswapPairEthDai = new ethers.Contract(config.unisPair_EthDai, UniswapPai
 // UND-DAI Uniswap Router
 const UniswapRouter = new ethers.Contract(config.uniswapRouter, UniswapRouterABI, signer);
 
+// DAI
+const Dai = new ethers.Contract(config.DAI, ERC20ABI, signer);
+
+/**
+ * adjust function
+ * Adjust UND price by total supply
+ */
 async function adjust() {
   try {
-    const PoolUndDai = await fetchPairInfo(UniswapPairUndDai, true);
-    const PoolEthDai = await fetchPairInfo(UniswapPairEthDai, false);
+    const PoolUndDai = await _fetchPairInfo(UniswapPairUndDai, true);
+    const PoolEthDai = await _fetchPairInfo(UniswapPairEthDai, false);
 
-    const priceOfUnd = calcPrice(PoolUndDai, config.UND);
-    // const priceOfUnd = 1.000000000000001;
-    // const priceOfUnd = 0.999999999999999;
+    const priceOfUnd = _calcPrice(PoolUndDai, config.UND);
+    // const priceOfUnd = 1.000000000000001;// for testing
+    // const priceOfUnd = 0.999999999999999;// for testing
     console.log(`UND price: ${priceOfUnd} Dai`);
 
     const targetPriceOfUnd = 1;
@@ -66,13 +78,13 @@ async function adjust() {
     if (adjustedTotalSupply > totalSupplyOfUnd) {
       const mint = adjustedTotalSupply - totalSupplyOfUnd;
 
-      const rates = await fetchRates(Valuator, LLCContract);
-      const reserveDai = getStableTokenReserve(PoolEthDai, config.DAI);
+      const rates = await _fetchRates(Valuator, LLCContract);
+      const reserveDai = _getStableTokenReserve(PoolEthDai, config.DAI);
       const lockAmount = parseInt((PoolEthDai.totalSupply * mint) / (reserveDai * 2) / rates.loanRate);
       console.log(`Mint UND Amount: ${mint}`);
       console.log(`Lock Pool Token: ${lockAmount}`);
       await UniswapPairEthDai.approve(LLCContract.address, lockAmount);
-      await LLCContract.lockLPT(lockAmount, config.UND, { gasLimit: 150000 });
+      await LLCContract.lockLPT(lockAmount, config.UND, { gasLimit });
     } else if (adjustedTotalSupply < totalSupplyOfUnd) {
       const burn = totalSupplyOfUnd - adjustedTotalSupply;
 
@@ -81,14 +93,14 @@ async function adjust() {
       const unlockAmount = parseInt((locked * burn) / loaned);
       console.log(`Burn UND Amount: ${burn}`);
       console.log(`Unlock Pool Token: ${unlockAmount}`);
-      await LLCContract.unlockLPT(unlockAmount, config.UND, { gasLimit: 150000 });
+      await LLCContract.unlockLPT(unlockAmount, config.UND, { gasLimit });
     }
   } catch (error) {
     console.log(error);
   }
 }
 
-async function fetchPairInfo(uniPair, checkUND = false) {
+async function _fetchPairInfo(uniPair, checkUND = false) {
   try {
     const totalSupply = parseInt(await uniPair.totalSupply());
     const token0 = await uniPair.token0();
@@ -110,7 +122,7 @@ async function fetchPairInfo(uniPair, checkUND = false) {
   }
 }
 
-async function fetchRates(Valuator, LLC) {
+async function _fetchRates(Valuator, LLC) {
   try {
     const { fee, loanrate } = await Valuator.getLLCStruct(LLC.address);
     const loanRate = loanrate / 10 ** 6;
@@ -122,20 +134,51 @@ async function fetchRates(Valuator, LLC) {
   }
 }
 
-function calcPrice(poolUndDai, undAddress) {
+function _calcPrice(poolUndDai, undAddress) {
   return poolUndDai.token0 === undAddress
     ? poolUndDai.reserve1 / poolUndDai.reserve0
     : poolUndDai.reserve0 / poolUndDai.reserve1;
 }
 
-function getStableTokenReserve(poolInfo, stableTokenAddress) {
+function _getStableTokenReserve(poolInfo, stableTokenAddress) {
   return poolInfo.token0 === stableTokenAddress ? poolInfo.reserve0 : poolInfo.reserve1;
+}
+
+/**
+ * arbitrage function
+ * Get an arbitrage from the difference of the price of UND
+ */
+async function arbitrage() {
+  const PoolUndDai = await _fetchPairInfo(UniswapPairUndDai, true);
+  console.log(PoolUndDai);
+  const priceOfUnd = _calcPrice(PoolUndDai, config.UND);
+  // const priceOfUnd = 1.000000000000001;// for testing
+  // const priceOfUnd = 0.999999999999999;// for testing
+  console.log(`UND Price: ${priceOfUnd}`);
+  const amount = _culcSwapAmount(PoolUndDai.reserve0, PoolUndDai.reserve1);
+
+  if (priceOfUnd > 1) {
+    await short(amount, signer.address);
+  } else if (priceOfUnd < 1) {
+    await long(amount, signer.address);
+  }
+
+  const PoolUndDaiAfter = await _fetchPairInfo(UniswapPairUndDai, true);
+  const priceOfUndAfter = _calcPrice(PoolUndDaiAfter, config.UND);
+  console.log(PoolUndDaiAfter);
+  console.log(`UND Price After Swap: ${priceOfUndAfter}`);
+}
+
+function _culcSwapAmount(reserve0, reserve1) {
+  // const equal = Math.sqrt(reserve0 * reserve1);
+  // return reserve0 > reserve1 ? reserve0 - equal : reserve1 - equal;
+  return web3.utils.toWei('0.1', 'ether'); // for testing
 }
 
 async function approve() {
   const totalSupply = await UnboundDollars.totalSupply();
   try {
-    const approve = UnboundDollars.approve(LLC_Dai, totalSupply);
+    const approve = UnboundDollars.approve(LLC_EthDai, totalSupply);
     console.log(approve);
     return approve;
   } catch (error) {
@@ -153,40 +196,50 @@ async function mint(LPTamt) {
   }
 }
 
-async function short(amountIn) {
-  // short UND when the price is less than 1 USD
-  // supply more UND by locking UND-DAI LPT's and buy DAI
+async function short(amountIn, to) {
+  // short UND when the price is more than 1 USD
   try {
-    const path = [UND, DAI];
-    const amountOutMin = await UniswapRouter.getAmountsOut(path);
-
-    // Unbound Admin Address
-    const to = '0x2aD458F069A6D456690de46Acfa27EFA26748dA8';
-    const deadline = +new Date() + 10000;
+    console.log('short');
+    console.log(amountIn);
+    const path = [config.UND, config.DAI];
+    const amountOutMin = await UniswapRouter.getAmountsOut(amountIn, path);
+    const now = new Date();
+    const deadline = Math.floor(now.getTime() / 1000) + 100;
 
     // perform a swap
-    const swap = await UniswapRouter.swapExactTokensForTokens(amountIn, amountOutMin, path, to, deadline);
-    console.log(swap);
+    const approve = await UnboundDollars.approve(UniswapRouter.address, amountIn);
+    await approve.wait();
+    const swap = await UniswapRouter.swapExactTokensForTokens(amountIn, amountOutMin[1], path, to, deadline, {
+      gasLimit,
+      gasPrice,
+    });
+    await swap.wait();
     return swap;
   } catch (error) {
     console.log(error);
   }
 }
 
-async function long(LPTamt) {
-  // short UND when the price is more than 1 USD
-  // buy UND
+async function long(amountIn, to) {
+  // long UND when the price is less than 1 USD
   try {
-    const path = [DAI, UND];
-    const amountOutMin = await UniswapRouter.getAmountsOut(path);
-
-    // Unbound Admin Address
-    const to = '0x2aD458F069A6D456690de46Acfa27EFA26748dA8';
-    const deadline = +new Date() + 10000;
+    console.log('long');
+    console.log(amountIn);
+    const path = [config.DAI, config.UND];
+    const amountOutMin = await UniswapRouter.getAmountsOut(amountIn, path);
+    const now = new Date();
+    const deadline = Math.floor(now.getTime() / 1000) + 100;
 
     // perform a swap
-    const swap = await UniswapRouter.swapExactTokensForTokens(amountIn, amountOutMin, path, to, deadline);
-    console.log(swap);
+    const approve = await Dai.approve(UniswapRouter.address, amountIn);
+    await approve.wait();
+    const swap = await UniswapRouter.swapExactTokensForTokens(amountIn, amountOutMin[1], path, to, deadline, {
+      gasLimit,
+      gasPrice,
+    });
+    // console.log(swap);
+    await swap.wait();
+    // console.log(wait);
     return swap;
   } catch (error) {
     console.log(error);
@@ -239,6 +292,3 @@ function Utf8ArrayToStr(array) {
 
   return out;
 }
-
-
-adjust()
